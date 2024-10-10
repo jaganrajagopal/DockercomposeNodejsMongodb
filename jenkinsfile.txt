@@ -1,0 +1,61 @@
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY = "your-docker-registry"  // e.g., Docker Hub or AWS ECR
+        IMAGE_NAME = "your-image-name"     // Replace with your Docker image name
+        EKS_CLUSTER_NAME = "your-eks-cluster-name" // EKS Cluster name
+        NAMESPACE = "default"              // Kubernetes namespace
+        KUBE_CONFIG = credentials('kubeconfig-credentials-id') // Jenkins credentials for kubeconfig
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    dockerImage = docker.build("${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}")
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry("https://${REGISTRY}", 'docker-credentials-id') {
+                        dockerImage.push("${BUILD_NUMBER}")
+                        dockerImage.push("latest")
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withKubeConfig([credentialsId: 'kubeconfig-credentials-id', clusterName: "${EKS_CLUSTER_NAME}", contextName: "${EKS_CLUSTER_NAME}"]) {
+                    script {
+                        // Create MongoDB deployment and service if not already running
+                        sh 'kubectl apply -f kubernetes/mongo-deployment.yaml'
+
+                        // Deploy the Node.js application using the newly built image
+                        sh """
+                        kubectl set image deployment/nodejs-app nodejs-app=${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER} --namespace=${NAMESPACE}
+                        kubectl apply -f kubernetes/nodejs-deployment.yaml
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}

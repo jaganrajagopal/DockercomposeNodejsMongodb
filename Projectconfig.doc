@@ -1,0 +1,185 @@
+To create a CI/CD pipeline in Jenkins that builds your Node.js Docker application, connects to a MongoDB database, and deploys it to an EKS (Elastic Kubernetes Service) cluster, you will need a Jenkinsfile. The pipeline will do the following:
+
+Checkout the code.
+Build the Docker image.
+Push the Docker image to a container registry (like Docker Hub or ECR).
+Deploy the application to the EKS cluster using kubectl.
+Here’s an example Jenkinsfile for the pipeline:
+
+Jenkinsfile
+groovy
+Copy code
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY = "your-docker-registry"  // e.g., Docker Hub or AWS ECR
+        IMAGE_NAME = "your-image-name"     // Replace with your Docker image name
+        EKS_CLUSTER_NAME = "your-eks-cluster-name" // EKS Cluster name
+        NAMESPACE = "default"              // Kubernetes namespace
+        KUBE_CONFIG = credentials('kubeconfig-credentials-id') // Jenkins credentials for kubeconfig
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    dockerImage = docker.build("${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}")
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry("https://${REGISTRY}", 'docker-credentials-id') {
+                        dockerImage.push("${BUILD_NUMBER}")
+                        dockerImage.push("latest")
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withKubeConfig([credentialsId: 'kubeconfig-credentials-id', clusterName: "${EKS_CLUSTER_NAME}", contextName: "${EKS_CLUSTER_NAME}"]) {
+                    script {
+                        // Create MongoDB deployment and service if not already running
+                        sh 'kubectl apply -f kubernetes/mongo-deployment.yaml'
+
+                        // Deploy the Node.js application using the newly built image
+                        sh """
+                        kubectl set image deployment/nodejs-app nodejs-app=${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER} --namespace=${NAMESPACE}
+                        kubectl apply -f kubernetes/nodejs-deployment.yaml
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}
+Explanation of Stages:
+Checkout Code:
+
+Pulls the latest code from the Git repository.
+Build Docker Image:
+
+Builds a Docker image for your Node.js app based on the Dockerfile you already have.
+Push Docker Image:
+
+Pushes the Docker image to a container registry. Replace docker-credentials-id with the Jenkins credential ID that contains access to your Docker Hub or Amazon ECR account.
+Deploy to EKS:
+
+Deploys the MongoDB and Node.js app to the EKS cluster using kubectl. It applies the MongoDB and Node.js Kubernetes manifests (mongo-deployment.yaml and nodejs-deployment.yaml).
+Requirements:
+Jenkins Plugins:
+
+Docker Pipeline Plugin
+Kubernetes Plugin or Jenkins with kubectl access
+Credentials Plugin (for securely storing Docker and kubeconfig credentials)
+Credentials:
+
+Docker credentials (docker-credentials-id) for pushing to Docker Hub or ECR.
+Kubernetes credentials (kubeconfig-credentials-id) to access your EKS cluster.
+Kubernetes Manifests: You will need to define the Kubernetes manifests (YAML files) for MongoDB and Node.js, like the one I previously shared. Place them in a folder called kubernetes in your repository, such as:
+
+kubernetes/mongo-deployment.yaml
+kubernetes/nodejs-deployment.yaml
+MongoDB Deployment (kubernetes/mongo-deployment.yaml):
+yaml
+Copy code
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:4.4
+        ports:
+        - containerPort: 27017
+        volumeMounts:
+        - name: mongo-storage
+          mountPath: /data/db
+      volumes:
+      - name: mongo-storage
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
+Node.js Deployment (kubernetes/nodejs-deployment.yaml):
+yaml
+Copy code
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodejs-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nodejs-app
+  template:
+    metadata:
+      labels:
+        app: nodejs-app
+    spec:
+      containers:
+      - name: nodejs-app
+        image: your-docker-registry/your-image-name:latest # Replace with your registry/image name
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MONGO_URL
+          value: "mongodb://mongo:27017/your-database-name"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodejs-service
+spec:
+  type: NodePort
+  selector:
+    app: nodejs-app
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30001
+How It Works:
+The Jenkinsfile will pull the code, build the Docker image using your Dockerfile, and push the image to your container registry.
+Then, it will use kubectl to deploy MongoDB and your Node.js application to the EKS cluster. MongoDB and Node.js app will communicate internally using the ClusterIP service.
+Prerequisites on Jenkins:
+Install the necessary plugins.
+Ensure Jenkins is set up with Docker and has permissions to build and push Docker images.
+Make sure Jenkins can access your EKS cluster via kubectl using the kubeconfig file.
